@@ -4,7 +4,7 @@ var uuid = require('uuid');
 var bunyan = require('bunyan');
 var createCWStream = require('../');
 
-var region = 'us-west-1';
+var region = 'us-east-1';
 var logGroupName = 'test-group-' + uuid.v4();
 var logStreamName = 'test-stream-' + uuid.v4();
 

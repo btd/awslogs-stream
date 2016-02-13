@@ -3,113 +3,146 @@ var util = require('util');
 var Writable = require('stream').Writable;
 var AWS = require('aws-sdk');
 
-module.exports = createCloudWatchStream;
+module.exports = CloudWatchStream;
 
-function createCloudWatchStream(opts) {
-  return new CloudWatchStream(opts);
-}
-
-util.inherits(CloudWatchStream, Writable);
 function CloudWatchStream(opts) {
-  Writable.call(this, {objectMode: true});
+  if(!(this instanceof CloudWatchStream)) return new CloudWatchStream(opts);
+
+  Writable.call(this, { objectMode: true });
+
   this.logGroupName = opts.logGroupName;
   this.logStreamName = opts.logStreamName;
-  this.writeInterval = opts.writeInterval || 0;
 
-  this.cloudwatch = new AWS.CloudWatchLogs(opts.cloudWatchLogsOptions);
+  this.bufferDuration = opts.bufferDuration || 5000; //ms
+  this.batchCount = opts.batchCount || 1000; // count
+  //this.batchSize = opts.batchSize || 32768; //bytes
+
+  this.processLogRecord = opts.processLogRecord || createCWLog;
+
+  this.cloudwatch = opts.cloudWatchLogs || new AWS.CloudWatchLogs(opts.cloudWatchLogsOptions);
+
   this.queuedLogs = [];
+
   this.sequenceToken = null;
   this.writeQueued = false;
 }
 
+util.inherits(CloudWatchStream, Writable);
+
 CloudWatchStream.prototype._write = function _write(record, _enc, cb) {
-  this.queuedLogs.push(record);
-  if (!this.writeQueued) {
-    this.writeQueued = true;
-    setTimeout(this._writeLogs.bind(this), this.writeInterval);
-  }
+  this.queuedLogs.push(this.processLogRecord(record));
+
+  this._scheduleWriteLogs();
   cb();
 };
 
-CloudWatchStream.prototype._writeLogs = function _writeLogs() {
-  if (this.sequenceToken === null) {
-    return this._getSequenceToken(this._writeLogs.bind(this));
+CloudWatchStream.prototype._scheduleWriteLogs = function _scheduleWriteLogs() {
+  if(this.queuedLogs.length >= this.batchCount) {
+    this._writeLogs();
+  } else {
+    var that = this;
+    if (!this.writeQueued) {
+      this.writeQueued = true;
+      setTimeout(function() {
+        that._writeLogs();
+      }, this.bufferDuration);
+    }
   }
-  var log = {
+};
+
+CloudWatchStream.prototype._writeLogs = function _writeLogs() {
+  var that = this;
+
+  if (this.sequenceToken === null) {
+    return getSequenceToken(this.cloudwatch, this.logGroupName, this.logStreamName, function(err, token) {
+      if(err) return that.emit('error', err);
+
+      that.sequenceToken = token;
+      that._writeLogs();
+    });
+  }
+  var params = {
     logGroupName: this.logGroupName,
     logStreamName: this.logStreamName,
     sequenceToken: this.sequenceToken,
-    logEvents: this.queuedLogs.map(createCWLog)
+    logEvents: this.queuedLogs
   };
+
   this.queuedLogs = [];
-  var obj = this;
-  writeLog();
+  this.queuedCallbacks = [];
 
-  function writeLog() {
-    obj.cloudwatch.putLogEvents(log, function (err, res) {
-      if (err) {
-        if (err.retryable) return setTimeout(writeLog, obj.writeInterval);
-        return obj._error(err);
-      }
-      obj.sequenceToken = res.nextSequenceToken;
-      if (obj.queuedLogs.length) {
-        return setTimeout(obj._writeLogs.bind(obj), obj.writeInterval);
-      }
-      obj.writeQueued = false;
-    });
-  }
-};
+  makeRetryableCall(this.cloudwatch, 'putLogEvents', params, function(err, data) {
+    if(err) return that.emit('error', err);
 
-CloudWatchStream.prototype._getSequenceToken = function _getSequenceToken(done) {
-  var params = {
-    logGroupName: this.logGroupName,
-    logStreamNamePrefix: this.logStreamName
-  };
-  var obj = this;
-  this.cloudwatch.describeLogStreams(params, function (err, data) {
-    if (err) {
-      if (err.name === 'ResourceNotFoundException') {
-        createLogGroupAndStream(obj.cloudwatch, obj.logGroupName, obj.logStreamName, createStreamCb);
-        return;
-      }
-      obj._error(err);
-      return;
+    that.writeQueued = false;
+
+    that.sequenceToken = data.nextSequenceToken;
+    if (that.queuedLogs.length) {
+      that._scheduleWriteLogs();
     }
-    if (data.logStreams.length === 0) {
-      createLogStream(obj.cloudwatch, obj.logGroupName, obj.logStreamName, createStreamCb);
-      return;
-    }
-    obj.sequenceToken = data.logStreams[0].uploadSequenceToken;
-    done();
   });
 
-  function createStreamCb(err) {
-    if (err) return obj._error(err);
-    // call again to verify stream was created - silently fails sometimes!
-    obj._getSequenceToken(done);
-  }
 };
 
-CloudWatchStream.prototype._error = function _error(err) {
-  if (this.onError) return this.onError(err);
-  throw err;
-};
+function getSequenceToken(cloudwatch, logGroupName, logStreamName, cb) {
+  describeLogStreams(cloudwatch, logGroupName, logStreamName, function (err, data) {
+    if (err) {
+      if (err.name === 'ResourceNotFoundException') {
+        return createLogGroupAndStream(cloudwatch, logGroupName, logStreamName, function(err) {
+          cb(err);
+        });
+      }
+      return cb(err);
+    }
+    if (data.logStreams.length === 0) {
+      return createLogStream(cloudwatch, logGroupName, logStreamName, function(err) {
+        cb(err);
+      });
+    }
+    cb(null, data.logStreams[0].uploadSequenceToken);
+  });
+}
 
 function createLogGroupAndStream(cloudwatch, logGroupName, logStreamName, cb) {
-  cloudwatch.createLogGroup({
-    logGroupName: logGroupName
-  }, function (err) {
-    if (err) return err;
+  createLogGroup(cloudwatch, logGroupName, function(err) {
+    if(err) return cb(err);
+
     createLogStream(cloudwatch, logGroupName, logStreamName, cb);
   });
 }
 
+function makeRetryableCall(client, method, arg, callback) {
+  client[method](arg, function(err, data) {
+    if(err) {
+      if(err.retryable) return makeRetryableCall(client, method, arg, callback);
+
+      callback(err);
+    } else {
+      callback(null, data);
+    }
+  });
+}
+
+function createLogGroup(cloudwatch, logGroupName, cb) {
+  makeRetryableCall(cloudwatch, 'createLogGroup', {
+    logGroupName: logGroupName
+  }, cb);
+}
+
 function createLogStream(cloudwatch, logGroupName, logStreamName, cb) {
-  cloudwatch.createLogStream({
+  makeRetryableCall(cloudwatch, 'createLogStream', {
     logGroupName: logGroupName,
     logStreamName: logStreamName
   }, cb);
 }
+
+function describeLogStreams(cloudwatch, logGroupName, logStreamName, cb) {
+  makeRetryableCall(cloudwatch, 'describeLogStreams', {
+    logGroupName: logGroupName,
+    logStreamNamePrefix: logStreamName
+  }, cb);
+}
+
 
 function createCWLog(bunyanLog) {
   var message = {};
