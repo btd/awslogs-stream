@@ -13,6 +13,12 @@ var cwStream = createCWStream({
   logStreamName: logStreamName,
   cloudWatchLogsOptions: {
     region: region
+  },
+  processLogRecord: function(record) {
+    return {
+      message: JSON.stringify(record),
+      timestamp: 1*new Date(record.time)
+    };
   }
 });
 

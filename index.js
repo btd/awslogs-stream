@@ -17,7 +17,7 @@ function CloudWatchStream(opts) {
   this.batchCount = opts.batchCount || 1000; // count
   //this.batchSize = opts.batchSize || 32768; //bytes
 
-  this.processLogRecord = opts.processLogRecord || createCWLog;
+  this.processLogRecord = opts.processLogRecord || function(record) { return record; };
 
   this.cloudwatch = opts.cloudWatchLogs || new AWS.CloudWatchLogs(opts.cloudWatchLogsOptions);
 
@@ -141,18 +141,4 @@ function describeLogStreams(cloudwatch, logGroupName, logStreamName, cb) {
     logGroupName: logGroupName,
     logStreamNamePrefix: logStreamName
   }, cb);
-}
-
-
-function createCWLog(bunyanLog) {
-  var message = {};
-  for (var key in bunyanLog) {
-    if (key === 'time') continue;
-    message[key] = bunyanLog[key];
-  }
-  var log = {
-    message: JSON.stringify(message),
-    timestamp: new Date(bunyanLog.time).getTime()
-  };
-  return log;
 }

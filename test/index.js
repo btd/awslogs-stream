@@ -19,7 +19,13 @@ describe('bunyan-cloudwatch', function () {
     cwStream = createCWStream({
       logGroupName: logGroupName,
       logStreamName: logStreamName,
-      bufferDuration: 500
+      bufferDuration: 500,
+      processLogRecord: function(record) {
+        return {
+          message: JSON.stringify(record),
+          timestamp: 1*new Date(record.time)
+        };
+      }
     });
     log = bunyan.createLogger({
       name: 'foo',
