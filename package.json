@@ -1,6 +1,6 @@
 {
   "name": "awslogs-stream",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Writable stream to publish logs to AWS CloudWatch Logs",
   "homepage": "https://github.com/btd/awslogs-stream",
   "repository": "git://github.com/btd/awslogs-stream.git",
