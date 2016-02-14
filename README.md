@@ -46,7 +46,6 @@ With `opts` of:
 - `cloudWatchLogs` (optional): optional existing cloudwatchlogs client
 - `processLogRecord` (optional): function to process log records to for cloudwatch (it should return object with 2 properties: `message` to be string and `timestamp` to be unix timestamp)
 - `bufferDuration` (optional, by default it is 5000 ms) timeout between writes
-- `batchCount` (optional, by default 1000) after this number of records will be immediate send to cloud watch
 
 On write of the first log, the module creates the logGroup and logStream if necessary.
 

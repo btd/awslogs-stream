@@ -14,8 +14,6 @@ function CloudWatchStream(opts) {
   this.logStreamName = opts.logStreamName;
 
   this.bufferDuration = opts.bufferDuration || 5000; //ms
-  this.batchCount = opts.batchCount || 1000; // count
-  //this.batchSize = opts.batchSize || 32768; //bytes
 
   this.processLogRecord = opts.processLogRecord || function(record) { return record; };
 
@@ -37,17 +35,12 @@ CloudWatchStream.prototype._write = function _write(record, _enc, cb) {
 };
 
 CloudWatchStream.prototype._scheduleWriteLogs = function _scheduleWriteLogs() {
-  if(this.queuedLogs.length >= this.batchCount) {
-    clearTimeout(this._timeout);
-    this._writeLogs();
-  } else {
-    var that = this;
-    if (!this.writeQueued) {
-      this.writeQueued = true;
-      this._timeout = setTimeout(function() {
-        that._writeLogs();
-      }, this.bufferDuration);
-    }
+  var that = this;
+  if (!this.writeQueued) {
+    this.writeQueued = true;
+    setTimeout(function() {
+      that._writeLogs();
+    }, this.bufferDuration);
   }
 };
 
@@ -56,7 +49,10 @@ CloudWatchStream.prototype._writeLogs = function _writeLogs() {
 
   if (this.sequenceToken === null) {
     return getSequenceToken(this.cloudwatch, this.logGroupName, this.logStreamName, function(err, token) {
-      if(err) return that.emit('error', err);
+      if(err) {
+        that.writeQueued = false;
+        return that.emit('error', err);
+      }
 
       that.sequenceToken = token;
       that._writeLogs();
@@ -73,9 +69,9 @@ CloudWatchStream.prototype._writeLogs = function _writeLogs() {
   this.queuedCallbacks = [];
 
   makeRetryableCall(this.cloudwatch, 'putLogEvents', params, function(err, data) {
-    if(err) return that.emit('error', err);
-
     that.writeQueued = false;
+
+    if(err) return that.emit('error', err);
 
     that.sequenceToken = data.nextSequenceToken;
     if (that.queuedLogs.length) {
