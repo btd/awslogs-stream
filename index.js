@@ -38,12 +38,13 @@ CloudWatchStream.prototype._write = function _write(record, _enc, cb) {
 
 CloudWatchStream.prototype._scheduleWriteLogs = function _scheduleWriteLogs() {
   if(this.queuedLogs.length >= this.batchCount) {
+    clearTimeout(this._timeout);
     this._writeLogs();
   } else {
     var that = this;
     if (!this.writeQueued) {
       this.writeQueued = true;
-      setTimeout(function() {
+      this._timeout = setTimeout(function() {
         that._writeLogs();
       }, this.bufferDuration);
     }
