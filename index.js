@@ -13,7 +13,8 @@ function CloudWatchStream(opts) {
   this.logGroupName = opts.logGroupName;
   this.logStreamName = opts.logStreamName;
 
-  this.bufferDuration = opts.bufferDuration || 5000; //ms
+  this.bufferDuration = opts.bufferDuration || 5000; // ms
+  this.batchCount = opts.batchCount || 1000; // number
 
   this.processLogRecord = opts.processLogRecord || function(record) { return record; };
 
@@ -30,7 +31,17 @@ util.inherits(CloudWatchStream, Writable);
 CloudWatchStream.prototype._write = function _write(record, _enc, cb) {
   this.queuedLogs.push(this.processLogRecord(record));
 
-  this._scheduleWriteLogs();
+  var that = this;
+  if(this.batchCount <= this.queuedLogs.length) {
+    clearTimeout(this._timeout);
+    this._writeLogs(function(err) {
+      if(err) {
+        that.emit('error', err);
+      }
+    });
+  } else {
+    this._scheduleWriteLogs();
+  }
   cb();
 };
 
@@ -38,24 +49,26 @@ CloudWatchStream.prototype._scheduleWriteLogs = function _scheduleWriteLogs() {
   var that = this;
   if (!this.writeQueued) {
     this.writeQueued = true;
-    setTimeout(function() {
-      that._writeLogs();
+    this._timeout = setTimeout(function() {
+      that._writeLogs(function(err) {
+        that.writeQueued = false;
+        if(err) {
+          that.emit('error', err);
+        }
+      });
     }, this.bufferDuration);
   }
 };
 
-CloudWatchStream.prototype._writeLogs = function _writeLogs() {
+CloudWatchStream.prototype._writeLogs = function _writeLogs(done) {
   var that = this;
 
   if (this.sequenceToken === null) {
     return getSequenceToken(this.cloudwatch, this.logGroupName, this.logStreamName, function(err, token) {
-      if(err) {
-        that.writeQueued = false;
-        return that.emit('error', err);
-      }
+      if(err) return done(err);
 
       that.sequenceToken = token;
-      that._writeLogs();
+      that._writeLogs(done);
     });
   }
   var params = {
@@ -69,16 +82,19 @@ CloudWatchStream.prototype._writeLogs = function _writeLogs() {
   this.queuedCallbacks = [];
 
   makeRetryableCall(this.cloudwatch, 'putLogEvents', params, function(err, data) {
-    that.writeQueued = false;
-
-    if(err) return that.emit('error', err);
+    if(err) {
+      that.queuedLogs = params.logEvents.concat(that.queuedLogs);
+      return done(err);
+    }
 
     that.sequenceToken = data.nextSequenceToken;
+
+    done();
+
     if (that.queuedLogs.length) {
       that._scheduleWriteLogs();
     }
   });
-
 };
 
 function getSequenceToken(cloudwatch, logGroupName, logStreamName, cb) {
